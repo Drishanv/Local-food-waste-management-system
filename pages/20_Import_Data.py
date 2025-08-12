@@ -4,6 +4,24 @@ from db import run_exec
 
 st.title("📥 Bulk Import CSVs")
 
+# -------- batching + tiny helpers --------
+BATCH = 100  # lower to 50 if your DB proxy is flaky; raise to 200 if stable
+
+def _truncate(v, n):
+    if v is None:
+        return None
+    s = str(v)
+    return s[:n]
+
+def _clean(v):
+    # Turn NaN/NaT into None so MySQL accepts them
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v
+
 # ----- canonical schemas (DB column names) -----
 CANON = {
     "providers": {
@@ -82,8 +100,10 @@ if file:
 
         if missing:
             st.error(f"Missing required columns for `{TABLE}`: {missing}")
-            st.info("Tip: headers can be any case; underscores/spaces are ignored. "
-                    "Common synonyms like phone/contact_number are accepted.")
+            st.info(
+                "Tip: headers can be any case; underscores/spaces are ignored. "
+                "Common synonyms like phone/contact_number are accepted."
+            )
         else:
             st.success("All required columns present.")
 
@@ -91,65 +111,142 @@ if file:
         st.dataframe(df.head())
 
     if not missing and st.button("Insert / Upsert rows"):
-        inserted = 0
+        total = len(df)
+        prog = st.progress(0)
+        status = st.empty()
+
+        # ---------- PROVIDERS ----------
         if TABLE == "providers":
-            for r in df.to_dict(orient="records"):
+            rows = []
+            for i, r in enumerate(df.to_dict(orient="records"), 1):
+                rows.append((
+                    int(r["Provider_ID"]),
+                    _truncate(_clean(r.get("Name")), 100),
+                    _truncate(_clean(r.get("Type")), 50),
+                    _truncate(_clean(r.get("Address")), 255),
+                    _truncate(_clean(r.get("City")), 100),
+                    _truncate(_clean(r.get("Contact")), 100),
+                ))
+                if len(rows) >= BATCH:
+                    run_exec("""
+                        INSERT INTO providers(Provider_ID,Name,Type,Address,City,Contact)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE Name=VALUES(Name),Type=VALUES(Type),
+                        Address=VALUES(Address),City=VALUES(City),Contact=VALUES(Contact)
+                    """, rows)
+                    rows.clear()
+                if i % BATCH == 0 or i == total:
+                    prog.progress(i/total)
+                    status.write(f"Inserting providers… {i:,}/{total:,}")
+            if rows:
                 run_exec("""
                     INSERT INTO providers(Provider_ID,Name,Type,Address,City,Contact)
                     VALUES (%s,%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE Name=VALUES(Name),Type=VALUES(Type),
                     Address=VALUES(Address),City=VALUES(City),Contact=VALUES(Contact)
-                """, (
-                    int(r["Provider_ID"]), str(r["Name"]), r.get("Type"),
-                    r.get("Address"), r.get("City"), str(r.get("Contact"))
-                ))
-                inserted += 1
+                """, rows)
 
+        # ---------- RECEIVERS ----------
         elif TABLE == "receivers":
-            for r in df.to_dict(orient="records"):
+            rows = []
+            for i, r in enumerate(df.to_dict(orient="records"), 1):
+                rows.append((
+                    int(r["Receiver_ID"]),
+                    _truncate(_clean(r.get("Name")), 100),
+                    _truncate(_clean(r.get("Type")), 50),
+                    _truncate(_clean(r.get("City")), 100),
+                    _truncate(_clean(r.get("Contact")), 100),
+                ))
+                if len(rows) >= BATCH:
+                    run_exec("""
+                        INSERT INTO receivers(Receiver_ID,Name,Type,City,Contact)
+                        VALUES (%s,%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE Name=VALUES(Name),Type=VALUES(Type),
+                        City=VALUES(City),Contact=VALUES(Contact)
+                    """, rows)
+                    rows.clear()
+                if i % BATCH == 0 or i == total:
+                    prog.progress(i/total)
+                    status.write(f"Inserting receivers… {i:,}/{total:,}")
+            if rows:
                 run_exec("""
                     INSERT INTO receivers(Receiver_ID,Name,Type,City,Contact)
                     VALUES (%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE Name=VALUES(Name),Type=VALUES(Type),
                     City=VALUES(City),Contact=VALUES(Contact)
-                """, (
-                    int(r["Receiver_ID"]), str(r["Name"]), r.get("Type"),
-                    r.get("City"), str(r.get("Contact"))
-                ))
-                inserted += 1
+                """, rows)
 
+        # ---------- FOOD_LISTINGS ----------
         elif TABLE == "food_listings":
-            # Type fixes
             if "Expiry_Date" in df.columns:
                 df["Expiry_Date"] = pd.to_datetime(df["Expiry_Date"], errors="coerce").dt.date
-            for r in df.to_dict(orient="records"):
+            rows = []
+            for i, r in enumerate(df.to_dict(orient="records"), 1):
+                rows.append((
+                    int(r["Food_ID"]),
+                    _truncate(_clean(r.get("Food_Name")), 120),
+                    int(_clean(r.get("Quantity", 0)) or 0),
+                    _clean(r.get("Expiry_Date")),
+                    int(r["Provider_ID"]),
+                    _truncate(_clean(r.get("Provider_Type")), 50),
+                    _truncate(_clean(r.get("Location")), 100),
+                    _truncate(_clean(r.get("Food_Type")), 50),
+                    _truncate(_clean(r.get("Meal_Type")), 50),
+                ))
+                if len(rows) >= BATCH:
+                    run_exec("""
+                        INSERT INTO food_listings(Food_ID,Food_Name,Quantity,Expiry_Date,Provider_ID,Provider_Type,Location,Food_Type,Meal_Type)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE Food_Name=VALUES(Food_Name),Quantity=VALUES(Quantity),
+                        Expiry_Date=VALUES(Expiry_Date),Provider_ID=VALUES(Provider_ID),Provider_Type=VALUES(Provider_Type),
+                        Location=VALUES(Location),Food_Type=VALUES(Food_Type),Meal_Type=VALUES(Meal_Type)
+                    """, rows)
+                    rows.clear()
+                if i % BATCH == 0 or i == total:
+                    prog.progress(i/total)
+                    status.write(f"Inserting food_listings… {i:,}/{total:,}")
+            if rows:
                 run_exec("""
                     INSERT INTO food_listings(Food_ID,Food_Name,Quantity,Expiry_Date,Provider_ID,Provider_Type,Location,Food_Type,Meal_Type)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE Food_Name=VALUES(Food_Name),Quantity=VALUES(Quantity),
                     Expiry_Date=VALUES(Expiry_Date),Provider_ID=VALUES(Provider_ID),Provider_Type=VALUES(Provider_Type),
                     Location=VALUES(Location),Food_Type=VALUES(Food_Type),Meal_Type=VALUES(Meal_Type)
-                """, (
-                    int(r["Food_ID"]), str(r["Food_Name"]), int(r.get("Quantity", 0)),
-                    r.get("Expiry_Date"), int(r["Provider_ID"]), r.get("Provider_Type"),
-                    r.get("Location"), r.get("Food_Type"), r.get("Meal_Type")
-                ))
-                inserted += 1
+                """, rows)
 
+        # ---------- CLAIMS ----------
         elif TABLE == "claims":
             if "Timestamp" in df.columns:
                 df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-            for r in df.to_dict(orient="records"):
+            rows = []
+            for i, r in enumerate(df.to_dict(orient="records"), 1):
+                rows.append((
+                    int(r["Claim_ID"]),
+                    int(r["Food_ID"]),
+                    int(r["Receiver_ID"]),
+                    _truncate(_clean(r.get("Status", "Pending")), 20),
+                    _clean(r.get("Timestamp")),
+                ))
+                if len(rows) >= BATCH:
+                    run_exec("""
+                        INSERT INTO claims(Claim_ID,Food_ID,Receiver_ID,Status,Timestamp)
+                        VALUES (%s,%s,%s,%s,%s)
+                        ON DUPLICATE KEY UPDATE Food_ID=VALUES(Food_ID),Receiver_ID=VALUES(Receiver_ID),
+                        Status=VALUES(Status),Timestamp=VALUES(Timestamp)
+                    """, rows)
+                    rows.clear()
+                if i % BATCH == 0 or i == total:
+                    prog.progress(i/total)
+                    status.write(f"Inserting claims… {i:,}/{total:,}")
+            if rows:
                 run_exec("""
                     INSERT INTO claims(Claim_ID,Food_ID,Receiver_ID,Status,Timestamp)
                     VALUES (%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE Food_ID=VALUES(Food_ID),Receiver_ID=VALUES(Receiver_ID),
                     Status=VALUES(Status),Timestamp=VALUES(Timestamp)
-                """, (
-                    int(r["Claim_ID"]), int(r["Food_ID"]), int(r["Receiver_ID"]),
-                    r.get("Status","Pending"), r.get("Timestamp")
-                ))
-                inserted += 1
+                """, rows)
 
-        st.success(f"Inserted/updated {inserted} rows into `{TABLE}`.")
+        status.empty()
+        prog.progress(1.0)
+        st.success(f"Inserted/updated {total:,} rows into `{TABLE}`.")
         st.toast("Done!", icon="✅")

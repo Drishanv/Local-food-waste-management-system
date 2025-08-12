@@ -1,3 +1,5 @@
+Streamlit link- https://local-food-waste-management-system-ylwknnewoqzskhh3bzx8ed.streamlit.app/
+
 # Local Food Wastage Management System
 
 A Streamlit application and SQL-backed workflow that connects surplus food providers with people and NGOs in need, reduces food waste, and surfaces actionable insights from data.

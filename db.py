@@ -31,3 +31,52 @@ def run_exec(sql, params=None):
     cur.execute(sql, params or ())
     conn.commit()
     cur.close()
+
+# -------- One-time schema (create if not exists) --------
+SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS providers (
+      Provider_ID INT PRIMARY KEY,
+      Name VARCHAR(100) NOT NULL,
+      Type VARCHAR(50),
+      Address VARCHAR(255),
+      City VARCHAR(100),
+      Contact VARCHAR(100)
+    ) ENGINE=InnoDB;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS receivers (
+      Receiver_ID INT PRIMARY KEY,
+      Name VARCHAR(100) NOT NULL,
+      Type VARCHAR(50),
+      City VARCHAR(100),
+      Contact VARCHAR(100)
+    ) ENGINE=InnoDB;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS food_listings (
+      Food_ID INT PRIMARY KEY,
+      Food_Name VARCHAR(120) NOT NULL,
+      Quantity INT DEFAULT 0,
+      Expiry_Date DATE,
+      Provider_ID INT NOT NULL,
+      Provider_Type VARCHAR(50),
+      Location VARCHAR(100),
+      Food_Type VARCHAR(50),
+      Meal_Type VARCHAR(50)
+    ) ENGINE=InnoDB;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS claims (
+      Claim_ID INT PRIMARY KEY,
+      Food_ID INT NOT NULL,
+      Receiver_ID INT NOT NULL,
+      Status VARCHAR(20) DEFAULT 'Pending',
+      Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """
+)
+
+def ensure_schema():
+    for stmt in SCHEMA:
+        run_exec(stmt)

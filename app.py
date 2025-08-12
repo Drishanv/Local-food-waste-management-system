@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 # use the shared DB helpers you added in db.py
 from db import run_q as db_run_q, run_exec, ensure_schema
+ensure_schema()
 
 st.set_page_config(page_title="Local Food Wastage Management", layout="wide")
 

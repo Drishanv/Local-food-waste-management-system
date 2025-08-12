@@ -2,49 +2,36 @@
 import streamlit as st
 import pandas as pd
 import mysql.connector
-from mysql.connector import Error, InterfaceError
 from urllib.parse import quote
 
 st.set_page_config(page_title="Local Food Wastage Management", layout="wide")
 
-# ---------- DB: connection via Streamlit Secrets (Railway) ----------
-# Make sure your Streamlit Cloud Secrets contain:
-# MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE
-@st.cache_resource(show_spinner=False)
+# ---------- DB: direct connection (no secrets.toml) ----------
+@st.cache_resource
 def get_conn():
     return mysql.connector.connect(
-        host=st.secrets["MYSQLHOST"],
-        port=int(st.secrets.get("MYSQLPORT", 3306)),
-        user=st.secrets["MYSQLUSER"],
-        password=st.secrets["MYSQLPASSWORD"],
-        database=st.secrets["MYSQLDATABASE"],
-        autocommit=False,
+        host="localhost",
+        user="root",
+        password="Drishvig997@",
+        database="food_waste_db",
     )
 
 def run_q(sql, params=None, many=False, commit=False):
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
+    if many and isinstance(params, list):
+        cur.executemany(sql, params)
+    else:
+        cur.execute(sql, params or ())
+    rows = None
     try:
-        if many and isinstance(params, list):
-            cur.executemany(sql, params)
-        else:
-            cur.execute(sql, params or ())
-        rows = None
-        try:
-            rows = cur.fetchall()
-        except InterfaceError:
-            # no result set (e.g., INSERT/UPDATE)
-            pass
-        if commit:
-            conn.commit()
-        return pd.DataFrame(rows) if rows is not None else None
-    except Error as e:
-        if commit:
-            conn.rollback()
-        st.error(f"SQL error: {e}")
-        return pd.DataFrame()
-    finally:
-        cur.close()
+        rows = cur.fetchall()
+    except mysql.connector.InterfaceError:
+        pass
+    if commit:
+        conn.commit()
+    cur.close()
+    return pd.DataFrame(rows) if rows is not None else None
 
 # ---------- Small utilities ----------
 def tel_link(num):      return f"tel:{num}"
@@ -296,4 +283,4 @@ elif page == "Reports & Insights":
         else:
             df = run_q(sql)
         st.dataframe(df, use_container_width=True)
-        st.caption(f"SQL: `{sql.strip()[:200]}{'...' if len(sql.strip()) > 200 else ''}`")
+        st.caption(f"SQL: {sql.strip()[:200]}{'...' if len(sql.strip())>200 else ''}")

@@ -4,7 +4,12 @@ import streamlit as st
 import pandas as pd
 import mysql.connector  # only for catching mysql errors in try/except
 from urllib.parse import quote
-from db import run_q as db_run_q, run_exec, ensure_schema
+from db import ensure_schema
+try:
+    ensure_schema()   # safe & idempotent
+except Exception as e:
+    import streamlit as st
+    st.warning("Database is temporarily unavailable. Try refresh ▶️.")
 
 st.set_page_config(page_title="Local Food Wastage Management", layout="wide")
 ensure_schema()  # safe to run every start

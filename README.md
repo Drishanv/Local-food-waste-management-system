@@ -67,12 +67,3 @@ Indexing tips:
 - `donations(city_id, donated_at)`, `claims(city_id, claimed_at)`, `wastage(city_id, reported_at)`, `donations(provider_id)`
 
 ---
-
-## Getting Started (Local)
-
-### 1) Clone and install
-```bash
-git clone <your-repo-url>
-cd <repo>
-python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -r requirements.txt

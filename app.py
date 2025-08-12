@@ -2,33 +2,59 @@
 
 import streamlit as st
 import pandas as pd
-import mysql.connector  # only for catching mysql errors in try/except
+import mysql.connector   # only for catching mysql errors in try/except
 from urllib.parse import quote
+
 from db import run_q as db_run_q, run_exec, ensure_schema
 
+# ------------------------------------------------------------
+# App setup
+# ------------------------------------------------------------
 st.set_page_config(page_title="Local Food Wastage Management", layout="wide")
-ensure_schema()  # safe to run every start
 
-# ---------- Small wrapper so queries always return a DataFrame ----------
+# Run the schema creation safely (won't crash UI if DB had a transient hiccup)
+try:
+    ensure_schema()  # safe to run every start
+except Exception as e:
+    st.warning(f"Could not verify DB schema right now. If this persists, check DB: {e}")
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
 def run_q_df(sql, params=None):
     """Always return a pandas DataFrame, whether db_run_q returns list or DF."""
     rows = db_run_q(sql, params)
     return rows if isinstance(rows, pd.DataFrame) else pd.DataFrame(rows)
 
-# ---------- Small utilities ----------
-def tel_link(num):      return f"tel:{num}"
-def mailto_link(addr, subject="Food Donation", body="Hi, I’m interested."):
-    return f"mailto:{addr}?subject={quote(subject)}&body={quote(body)}"
-def wa_link(num, text="Hello, I’m interested in this food listing."):
-    num = ''.join(ch for ch in str(num) if ch.isdigit())
-    return f"https://wa.me/{num}?text={quote(text)}"
+# Safer link builders (avoid throwing if contact is empty/odd)
+def tel_link(num: str | int | None):
+    """Return tel: link or None if no digits found."""
+    if num is None:
+        return None
+    digits = "".join(ch for ch in str(num) if ch.isdigit())
+    return f"tel:{digits}" if digits else None
 
-# ---------- Helper to get next Claim_ID ----------
+def mailto_link(addr: str | None, subject="Food Donation", body="Hi, I’m interested."):
+    """Return mailto: link or None if empty."""
+    if not addr:
+        return None
+    return f"mailto:{addr}?subject={quote(subject)}&body={quote(body)}"
+
+def wa_link(num: str | int | None, text="Hello, I’m interested in this food listing."):
+    """Return WhatsApp link or None if no digits found."""
+    if num is None:
+        return None
+    digits = "".join(ch for ch in str(num) if ch.isdigit())
+    return f"https://wa.me/{digits}?text={quote(text)}" if digits else None
+
 def next_claim_id():
+    """Get the next integer Claim_ID even without AUTO_INCREMENT."""
     df = run_q_df("SELECT COALESCE(MAX(Claim_ID)+1,1) AS next_id FROM claims")
     return int(df.iloc[0]["next_id"]) if df is not None and not df.empty else 1
 
-# ---------- UI ----------
+# ------------------------------------------------------------
+# UI
+# ------------------------------------------------------------
 st.title("Local Food Wastage Management System")
 page = st.sidebar.radio("Go to", ["Browse & Filter", "CRUD", "Reports & Insights"], key="nav_radio")
 
@@ -36,9 +62,9 @@ page = st.sidebar.radio("Go to", ["Browse & Filter", "CRUD", "Reports & Insights
 if page == "Browse & Filter":
     st.subheader("Filter food donations")
 
-    has_fl   = run_q_df("SELECT COUNT(*) AS c FROM food_listings")
-    locs     = run_q_df("SELECT DISTINCT Location FROM food_listings ORDER BY 1")["Location"].tolist() if not has_fl.empty else []
-    provs    = run_q_df("SELECT provider_id, name FROM providers ORDER BY name")
+    has_fl = run_q_df("SELECT COUNT(*) AS c FROM food_listings")
+    locs = run_q_df("SELECT DISTINCT Location FROM food_listings ORDER BY 1")["Location"].tolist() if not has_fl.empty else []
+    provs = run_q_df("SELECT provider_id, name FROM providers ORDER BY name")
     food_types = run_q_df("SELECT DISTINCT Food_Type FROM food_listings ORDER BY 1")["Food_Type"].tolist() if not has_fl.empty else []
 
     col1, col2, col3 = st.columns(3)
@@ -58,15 +84,18 @@ if page == "Browse & Filter":
         FROM food_listings fl
         JOIN providers p ON p.Provider_ID = fl.Provider_ID
     """
-    if where: sql += " WHERE " + " AND ".join(where)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY fl.Expiry_Date ASC"
 
     results = run_q_df(sql, args)
     st.success(f"{len(results)} matching listings found.")
     st.dataframe(results, use_container_width=True, key="df_results")
 
+    # ---------- Contact Provider ----------
     st.markdown("### Contact provider for a selected Food_ID")
     selected_id = st.number_input("Enter Food_ID", step=1, min_value=0, key="bf_selected_id")
+
     if st.button("Show Contact Options", key="btn_show_contact"):
         row = results[results["Food_ID"] == selected_id]
         if row.empty:
@@ -74,11 +103,24 @@ if page == "Browse & Filter":
         else:
             r = row.iloc[0]
             st.markdown(f"**Provider:** {r['Provider_Name']} ({r['Provider_Type']})")
-            contact = str(r["Contact"])
+
+            # contact can be phone or email; build safe links
+            raw_contact = r.get("Contact")
+            contact_str = "" if pd.isna(raw_contact) else str(raw_contact)
+
+            tel  = tel_link(contact_str)
+            mail = mailto_link(contact_str)
+            wa   = wa_link(contact_str)
+
             c1, c2, c3 = st.columns(3)
-            c1.link_button("Call", tel_link(contact), key="btn_call")
-            c2.link_button("Email", mailto_link(contact), key="btn_email")
-            c3.link_button("WhatsApp", wa_link(contact), key="btn_wa")
+            if tel:  c1.link_button("Call", tel)
+            else:    c1.button("Call", disabled=True)
+
+            if mail: c2.link_button("Email", mail)
+            else:    c2.button("Email", disabled=True)
+
+            if wa:   c3.link_button("WhatsApp", wa)
+            else:    c3.button("WhatsApp", disabled=True)
 
     st.divider()
     st.subheader("Quick claim (demo)")

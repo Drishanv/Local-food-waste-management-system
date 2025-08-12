@@ -1,42 +1,64 @@
-# db.py
+# db.py  — robust pooling; fresh connection per call
 import streamlit as st
 import mysql.connector
+from mysql.connector.pooling import MySQLConnectionPool
+
+def _cfg():
+    s = st.secrets["mysql"]
+    return {
+        "host": s["host"],
+        "port": int(s["port"]),
+        "user": s["user"],
+        "password": s["password"],
+        "database": s["database"],
+        "connection_timeout": 10,
+        "charset": "utf8mb4",
+    }
 
 @st.cache_resource
+def _pool():
+    # Create once per session; connections drawn on demand
+    return MySQLConnectionPool(pool_name="app_pool", pool_size=6, **_cfg())
+
 def get_conn():
-    cfg = st.secrets["mysql"]
-    conn = mysql.connector.connect(
-        host=cfg["host"],
-        port=int(cfg["port"]),
-        user=cfg["user"],
-        password=cfg["password"],
-        database=cfg["database"],
-        connection_timeout=10,
-        charset="utf8mb4",
-    )
-    conn.ping(reconnect=True, attempts=3, delay=2)
+    conn = _pool().get_connection()
+    # ensure the socket is alive; auto-reconnect if needed
+    try:
+        conn.ping(reconnect=True, attempts=3, delay=2)
+    except Exception:
+        # if ping failed, let connector re-open next time
+        raise
     return conn
 
 def run_q(sql, params=None):
     conn = get_conn()
-    cur = conn.cursor(dictionary=True)
-    cur.execute(sql, params or ())
-    rows = cur.fetchall()
-    cur.close()
-    return rows
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params or ())
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        conn.close()
 
 def run_exec(sql, params=None):
+    """
+    params: tuple -> execute
+            list[tuple] -> executemany
+    """
     conn = get_conn()
-    cur = conn.cursor()
-    # supports single row or executemany-style list of tuples
-    if isinstance(params, list) and params and isinstance(params[0], (tuple, list)):
-        cur.executemany(sql, params)
-    else:
-        cur.execute(sql, params or ())
-    conn.commit()
-    cur.close()
+    try:
+        cur = conn.cursor()
+        if isinstance(params, list):
+            cur.executemany(sql, params)
+        else:
+            cur.execute(sql, params or ())
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
 
-# -------- One-time schema (create if not exists) --------
+# ---------- optional: schema helpers ----------
 SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS providers (

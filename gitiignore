@@ -1,0 +1,8 @@
+# Python cache
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Streamlit secrets (do NOT commit real credentials)
+.streamlit/secrets.toml

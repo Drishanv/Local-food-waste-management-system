@@ -1,37 +1,20 @@
-# app.py
+# app.py  — Streamlit + MySQL (Railway) using db.py helpers
+
 import streamlit as st
 import pandas as pd
-import mysql.connector
+import mysql.connector  # only for catching mysql errors in try/except
 from urllib.parse import quote
+
+# use the shared DB helpers you added in db.py
+from db import run_q as db_run_q, run_exec
 
 st.set_page_config(page_title="Local Food Wastage Management", layout="wide")
 
-# ---------- DB: direct connection (no secrets.toml) ----------
-@st.cache_resource
-def get_conn():
-    return mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="Drishvig997@",
-        database="food_waste_db",
-    )
-
-def run_q(sql, params=None, many=False, commit=False):
-    conn = get_conn()
-    cur = conn.cursor(dictionary=True)
-    if many and isinstance(params, list):
-        cur.executemany(sql, params)
-    else:
-        cur.execute(sql, params or ())
-    rows = None
-    try:
-        rows = cur.fetchall()
-    except mysql.connector.InterfaceError:
-        pass
-    if commit:
-        conn.commit()
-    cur.close()
-    return pd.DataFrame(rows) if rows is not None else None
+# ---------- Small wrapper so queries always return a DataFrame ----------
+def run_q_df(sql, params=None):
+    """Always return a pandas DataFrame, whether db_run_q returns list or DF."""
+    rows = db_run_q(sql, params)
+    return rows if isinstance(rows, pd.DataFrame) else pd.DataFrame(rows)
 
 # ---------- Small utilities ----------
 def tel_link(num):      return f"tel:{num}"
@@ -43,7 +26,7 @@ def wa_link(num, text="Hello, I’m interested in this food listing."):
 
 # ---------- Helper to get next Claim_ID (works even without AUTO_INCREMENT) ----------
 def next_claim_id():
-    df = run_q("SELECT COALESCE(MAX(Claim_ID)+1,1) AS next_id FROM claims")
+    df = run_q_df("SELECT COALESCE(MAX(Claim_ID)+1,1) AS next_id FROM claims")
     return int(df.iloc[0]["next_id"]) if df is not None and not df.empty else 1
 
 # ---------- UI ----------
@@ -54,10 +37,10 @@ page = st.sidebar.radio("Go to", ["Browse & Filter", "CRUD", "Reports & Insights
 if page == "Browse & Filter":
     st.subheader("Filter food donations")
 
-    has_fl = run_q("SELECT COUNT(*) AS c FROM food_listings")
-    locs = run_q("SELECT DISTINCT Location FROM food_listings ORDER BY 1")["Location"].tolist() if not has_fl.empty else []
-    provs = run_q("SELECT provider_id, name FROM providers ORDER BY name")
-    food_types = run_q("SELECT DISTINCT Food_Type FROM food_listings ORDER BY 1")["Food_Type"].tolist() if not has_fl.empty else []
+    has_fl = run_q_df("SELECT COUNT(*) AS c FROM food_listings")
+    locs = run_q_df("SELECT DISTINCT Location FROM food_listings ORDER BY 1")["Location"].tolist() if not has_fl.empty else []
+    provs = run_q_df("SELECT provider_id, name FROM providers ORDER BY name")
+    food_types = run_q_df("SELECT DISTINCT Food_Type FROM food_listings ORDER BY 1")["Food_Type"].tolist() if not has_fl.empty else []
 
     col1, col2, col3 = st.columns(3)
     sel_loc = col1.selectbox("Location", ["All"] + locs)
@@ -79,7 +62,7 @@ if page == "Browse & Filter":
     if where: sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY fl.Expiry_Date ASC"
 
-    results = run_q(sql, args)
+    results = run_q_df(sql, args)
     st.success(f"{len(results)} matching listings found.")
     st.dataframe(results, use_container_width=True)
 
@@ -105,10 +88,9 @@ if page == "Browse & Filter":
     if st.button("Create Claim"):
         try:
             new_id = next_claim_id()
-            run_q(
+            run_exec(
                 "INSERT INTO claims(Claim_ID, Food_ID, Receiver_ID, Status, Timestamp) VALUES (%s,%s,%s,%s,NOW())",
-                params=(new_id, fid, rid, "Pending"),
-                commit=True
+                (new_id, fid, rid, "Pending"),
             )
             st.success(f"Claim created (ID: {new_id}, status: Pending).")
         except mysql.connector.Error as e:
@@ -129,15 +111,15 @@ elif page == "CRUD":
         contact = st.text_input("Contact")
         c1, c2 = st.columns(2)
         if c1.button("Upsert Provider"):
-            run_q("""
+            run_exec("""
                 INSERT INTO providers(Provider_ID,Name,Type,Address,City,Contact)
                 VALUES(%s,%s,%s,%s,%s,%s)
                 ON DUPLICATE KEY UPDATE Name=VALUES(Name), Type=VALUES(Type),
                                          Address=VALUES(Address), City=VALUES(City), Contact=VALUES(Contact)
-            """, (pid, name, typ, addr, city, contact), commit=True)
+            """, (pid, name, typ, addr, city, contact))
             st.success("Upserted.")
         if c2.button("Delete Provider"):
-            run_q("DELETE FROM providers WHERE Provider_ID=%s", (pid,), commit=True)
+            run_exec("DELETE FROM providers WHERE Provider_ID=%s", (pid,))
             st.warning("Deleted (if existed).")
 
     if table == "receivers":
@@ -149,15 +131,15 @@ elif page == "CRUD":
         contact = st.text_input("Contact", key="rcontact")
         c1, c2 = st.columns(2)
         if c1.button("Upsert Receiver"):
-            run_q("""
+            run_exec("""
                 INSERT INTO receivers(Receiver_ID,Name,Type,City,Contact)
                 VALUES(%s,%s,%s,%s,%s)
                 ON DUPLICATE KEY UPDATE Name=VALUES(Name), Type=VALUES(Type),
                                          City=VALUES(City), Contact=VALUES(Contact)
-            """, (rid, name, typ, city, contact), commit=True)
+            """, (rid, name, typ, city, contact))
             st.success("Upserted.")
         if c2.button("Delete Receiver"):
-            run_q("DELETE FROM receivers WHERE Receiver_ID=%s", (rid,), commit=True)
+            run_exec("DELETE FROM receivers WHERE Receiver_ID=%s", (rid,))
             st.warning("Deleted (if existed).")
 
     if table == "food_listings":
@@ -173,16 +155,16 @@ elif page == "CRUD":
         mtype = st.text_input("Meal_Type")
         c1, c2 = st.columns(2)
         if c1.button("Upsert Food"):
-            run_q("""
+            run_exec("""
                 INSERT INTO food_listings(Food_ID,Food_Name,Quantity,Expiry_Date,Provider_ID,Provider_Type,Location,Food_Type,Meal_Type)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON DUPLICATE KEY UPDATE Food_Name=VALUES(Food_Name), Quantity=VALUES(Quantity),
                     Expiry_Date=VALUES(Expiry_Date), Provider_ID=VALUES(Provider_ID), Provider_Type=VALUES(Provider_Type),
                     Location=VALUES(Location), Food_Type=VALUES(Food_Type), Meal_Type=VALUES(Meal_Type)
-            """, (fid, fname, qty, exp, pid, ptype, loc, ftype, mtype), commit=True)
+            """, (fid, fname, qty, exp, pid, ptype, loc, ftype, mtype))
             st.success("Upserted.")
         if c2.button("Delete Food"):
-            run_q("DELETE FROM food_listings WHERE Food_ID=%s", (fid,), commit=True)
+            run_exec("DELETE FROM food_listings WHERE Food_ID=%s", (fid,))
             st.warning("Deleted (if existed).")
 
     if table == "claims":
@@ -197,17 +179,15 @@ elif page == "CRUD":
             try:
                 if cid == 0:
                     new_id = next_claim_id()
-                    run_q(
+                    run_exec(
                         "INSERT INTO claims(Claim_ID, Food_ID, Receiver_ID, Status, Timestamp) VALUES (%s,%s,%s,%s,NOW())",
                         (new_id, fid, rid, status),
-                        commit=True
                     )
                     st.success(f"New claim created with Claim_ID {new_id}.")
                 else:
-                    run_q(
+                    run_exec(
                         "UPDATE claims SET Food_ID=%s, Receiver_ID=%s, Status=%s, Timestamp=NOW() WHERE Claim_ID=%s",
                         (fid, rid, status, cid),
-                        commit=True
                     )
                     st.success(f"Claim {cid} updated.")
             except mysql.connector.Error as e:
@@ -216,12 +196,12 @@ elif page == "CRUD":
             if cid == 0:
                 st.warning("Enter a Claim_ID > 0 to delete.")
             else:
-                run_q("DELETE FROM claims WHERE Claim_ID=%s", (cid,), commit=True)
+                run_exec("DELETE FROM claims WHERE Claim_ID=%s", (cid,))
                 st.warning(f"Claim {cid} deleted (if it existed).")
 
     st.divider()
     st.markdown("**Preview Table**")
-    st.dataframe(run_q(f"SELECT * FROM {table} LIMIT 200"), use_container_width=True)
+    st.dataframe(run_q_df(f"SELECT * FROM {table} LIMIT 200"), use_container_width=True)
 
 # ==================== REPORTS & INSIGHTS ====================
 elif page == "Reports & Insights":
@@ -276,11 +256,11 @@ elif page == "Reports & Insights":
     for title, sql in QUERIES.items():
         st.markdown(f"**{title}**")
         if title.startswith("4.") and city_for_q4:
-            df = run_q(sql, (city_for_q4,))
+            df = run_q_df(sql, (city_for_q4,))
         elif title.startswith("4.") and not city_for_q4:
             st.info("Enter a city above to run this query.")
             continue
         else:
-            df = run_q(sql)
+            df = run_q_df(sql)
         st.dataframe(df, use_container_width=True)
         st.caption(f"SQL: {sql.strip()[:200]}{'...' if len(sql.strip())>200 else ''}")
